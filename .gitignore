@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# 临时/测试产物
+test_out/
+*.vsqx
+*.mid
+
+# vendored 库源码的 clone 副本（vsqxt/ 是已复制的正式 vendored 包，保留）
+_vsqx_src/
+_vsqxt_src/
+
+# 系统
+.DS_Store
+Thumbs.db
+*.log
