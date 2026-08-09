@@ -335,14 +335,16 @@ def midi_to_vpr(
                         "notes": [
                             {
                                 "lyric": nd[4],
-                                "phoneme": nd[5],
+                                # 对照用户真实 V6 工程：phoneme 应为 None，
+                                # VOCALOID6 会从 lyric 假名自动生成音素（填序列反而不显示）
+                                "phoneme": None,
                                 "isProtected": False,
                                 "pos": nd[0],
                                 "duration": nd[1],
                                 "number": nd[2],
                                 "velocity": nd[3],
-                                "exp": {},
-                                # singingSkill 必须为有效对象（参考 v4to5.rs），null 会导致音符/歌词不渲染
+                                "exp": {"opening": 127},
+                                # singingSkill 必须为有效对象（参考真实工程），null 会导致音符不渲染
                                 "singingSkill": {
                                     "duration": 0,
                                     "weight": {"pre": 64, "post": 64},
