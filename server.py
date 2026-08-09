@@ -32,20 +32,23 @@ mcp = FastMCP("vocaloid6")
 @mcp.tool()
 def compose_song(
     lyrics: str = "",
-    style: str = "",
+    style: str = "default",
     tempo: float = 120.0,
-    key: int = 0,
+    key: str = "C",
+    scale: str = "major",
     length_bars: int = 8,
     out_dir: str = "",
 ) -> dict:
     """AI 作曲编排：输入歌词/想法，生成旋律 MIDI 并转为 VOCALOID6 工程文件。
+    参数：style=default/calm/lively，key=调名(C/Dm/Eb)或数字，scale=major/minor/pentatonic。
     当前使用降级模板旋律（MIDI-GPT 训练完成后自动切换引擎）。
     """
     return _compose_song(
         lyrics=lyrics or None,
-        style=style or None,
+        style=style,
         tempo=tempo,
-        key=key,
+        key=key or None,
+        scale=scale,
         length_bars=length_bars,
         out_dir=out_dir or None,
     )
