@@ -175,30 +175,66 @@ def midi_to_vsqx(
 
 
 def _extract_note_data(pm: pretty_midi.PrettyMIDI, bpm: float, lyrics: str | None):
-    """提取主旋律音符 → [(tick, dur, pitch, vel, lyric, phoneme)]，供 VSQX/VPR 共用。"""
-    from .lyrics import to_phonemes
+    """提取主旋律音符 → [(tick, dur, pitch, vel, lyric, phoneme)]，供 VSQX/VPR 共用。
+
+    VOCALOID 的 lyric 字段应填假名（如 さ），phoneme 填罗马音（如 sa）。
+    """
+    from .lyrics import to_phonemes, to_syllables
 
     mel = _pick_melody_track(pm)
     notes_sorted = sorted(mel.notes, key=lambda n: n.start)
 
+    # 成对取（假名, 罗马音），过滤无法合成的字符
+    pairs = []
     if lyrics:
-        phonemes = [p for p in to_phonemes(lyrics) if p]
-    else:
-        phonemes = []
+        syllables = to_syllables(lyrics)
+        phonemes = to_phonemes(lyrics)
+        pairs = [
+            (syl, ph)
+            for syl, ph in zip(syllables, phonemes)
+            if ph and not syl.startswith("[")
+        ]
     out = []
     for i, n in enumerate(notes_sorted):
-        ph = phonemes[i] if i < len(phonemes) else DEFAULT_LYRIC
+        if i < len(pairs):
+            lyric, ph = pairs[i]
+        else:
+            lyric = ph = DEFAULT_LYRIC
         out.append(
             (
                 _sec_to_ticks(n.start, bpm),
                 max(60, _sec_to_ticks(n.end - n.start, bpm)),
                 int(n.pitch),
                 max(1, min(127, int(n.velocity))),
-                ph,
+                lyric,
                 ph,
             )
         )
     return out
+
+
+def _discover_voicebanks() -> list:
+    """扫描 VOCALOID6 声库目录，返回 [(compID, name)]（空则返回占位）。"""
+    import glob
+
+    apd = glob.glob(
+        os.path.expandvars(r"%ProgramData%/Yamaha/VXBeta/voicebanks/apd/[A-Z0-9]*")
+    )
+    banks = []
+    for d in apd:
+        cid = os.path.basename(d)
+        if len(cid) == 16 and cid.isalnum():
+            banks.append((cid, cid))  # prof.vpl 是二进制，name 先用 compID 占位
+    return banks or [("VOCALOID6", "VOCALOID6")]
+
+
+def _pick_voice(voice_comp_id: str | None, voice_name: str | None) -> tuple:
+    """选择声库：显式指定优先，否则取本机发现的第一个真实声库。"""
+    banks = _discover_voicebanks()
+    if voice_comp_id:
+        return voice_comp_id, voice_name or voice_comp_id
+    cid, name = banks[0]
+    return cid, voice_name or name
 
 
 def midi_to_vpr(
@@ -207,16 +243,16 @@ def midi_to_vpr(
     song_name: str | None = None,
     tempo: float | None = None,
     out_path: str | None = None,
-    voice_comp_id: str = "VOCALOID6",
-    voice_name: str = "VOCALOID6",
+    voice_comp_id: str | None = None,
+    voice_name: str | None = None,
 ) -> dict:
     """
     MIDI → VOCALOID6 原生工程文件 .vpr（zip + Project/sequence.json）。
 
     VOCALOID6 的原生格式是 VPR（JSON），VSQX(XML) 仅为兼容读取且校验严格。
-    直接生成 VPR 可保证 V6 正常打开。
+    直接生成 VPR 可保证 V6 正常打开。声库默认自动发现本机安装的真实声库。
 
-    @return: {vpr_path, note_count, tempo, duration_sec, note_data}
+    @return: {vpr_path, note_count, tempo, duration_sec, note_data, voice_comp_id}
     """
     import json
     import zipfile
@@ -233,6 +269,7 @@ def midi_to_vpr(
     if not out_path:
         out_path = os.path.join(os.path.dirname(os.path.abspath(midi_path)), song + ".vpr")
 
+    comp_id, name = _pick_voice(voice_comp_id, voice_name)
     note_data = _extract_note_data(pm, bpm, lyrics)
     if not note_data:
         raise ValueError("旋律轨没有可导出的音符")
@@ -256,7 +293,7 @@ def midi_to_vpr(
             "timeSig": {"isFolded": False, "events": [{"bar": 0, "numer": 4, "denom": 4}]},
             "volume": {"isFolded": False, "height": 0.0, "events": [{"pos": 0, "value": 0}]},
         },
-        "voices": [{"compID": voice_comp_id, "name": voice_name}],
+        "voices": [{"compID": comp_id, "name": name}],
         "tracks": [
             {
                 "type": 0,
@@ -275,7 +312,7 @@ def midi_to_vpr(
                         "pos": 0,
                         "duration": total_ticks,
                         "styleName": "VOCALOID2 Compatible Style",
-                        "voice": {"compID": voice_comp_id, "name": voice_name},
+                        "voice": {"compID": comp_id, "name": name},
                         "midiEffects": [],
                         "notes": [
                             {
