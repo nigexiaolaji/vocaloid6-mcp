@@ -177,18 +177,19 @@ def midi_to_vsqx(
 def _extract_note_data(pm: pretty_midi.PrettyMIDI, bpm: float, lyrics: str | None):
     """提取主旋律音符 → [(tick, dur, pitch, vel, lyric, phoneme)]，供 VSQX/VPR 共用。
 
-    VOCALOID 的 lyric 字段应填假名（如 さ），phoneme 填罗马音（如 sa）。
+    VOCALOID 的 lyric 字段应填假名（如 さ），phoneme 必须是空格分隔的
+    音素序列（如 "s a"），否则歌词不渲染。
     """
-    from .lyrics import to_phonemes, to_syllables
+    from .lyrics import to_syllables, to_vocaloid_phonemes
 
     mel = _pick_melody_track(pm)
     notes_sorted = sorted(mel.notes, key=lambda n: n.start)
 
-    # 成对取（假名, 罗马音），过滤无法合成的字符
+    # 成对取（假名, 音素序列），过滤无法合成的字符
     pairs = []
     if lyrics:
         syllables = to_syllables(lyrics)
-        phonemes = to_phonemes(lyrics)
+        phonemes = to_vocaloid_phonemes(lyrics)
         pairs = [
             (syl, ph)
             for syl, ph in zip(syllables, phonemes)

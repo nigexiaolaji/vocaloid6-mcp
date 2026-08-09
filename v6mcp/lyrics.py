@@ -87,6 +87,40 @@ for k, v in _YOON.items():
     _YOON_MAP[k] = v
     _YOON_MAP[k.upper() if False else k] = v  # 片假名拗音同样适用（假名本身区分）
 
+# VOCALOID 音素表：假名 → 空格分隔的音素序列（合成引擎要求，非罗马音音节）
+# 约定：う 系元音记作 M，ん 记作 N，し 记作 S i；参考 VOCALOID 标准音素表
+_KANA_PHONEME = {
+    "あ": "a", "い": "i", "う": "M", "え": "e", "お": "o",
+    "か": "k a", "き": "k i", "く": "k M", "け": "k e", "こ": "k o",
+    "さ": "s a", "し": "S i", "す": "s M", "せ": "s e", "そ": "s o",
+    "た": "t a", "ち": "t i", "つ": "ts M", "て": "t e", "と": "t o",
+    "な": "n a", "に": "n i", "ぬ": "n M", "ね": "n e", "の": "n o",
+    "は": "h a", "ひ": "h i", "ふ": "f M", "へ": "h e", "ほ": "h o",
+    "ま": "m a", "み": "m i", "む": "m M", "め": "m e", "も": "m o",
+    "や": "y a", "ゆ": "y M", "よ": "y o",
+    "ら": "r a", "り": "r i", "る": "r M", "れ": "r e", "ろ": "r o",
+    "わ": "w a", "を": "o", "ん": "N",
+    # 浊音
+    "が": "g a", "ぎ": "g i", "ぐ": "g M", "げ": "g e", "ご": "g o",
+    "ざ": "z a", "じ": "j i", "ず": "z M", "ぜ": "z e", "ぞ": "z o",
+    "だ": "d a", "ぢ": "j i", "づ": "z M", "で": "d e", "ど": "d o",
+    "ば": "b a", "び": "b i", "ぶ": "b M", "べ": "b e", "ぼ": "b o",
+    # 半浊音
+    "ぱ": "p a", "ぴ": "p i", "ぷ": "p M", "ぺ": "p e", "ぽ": "p o",
+    # 拗音
+    "きゃ": "k y a", "きゅ": "k y M", "きょ": "k y o",
+    "しゃ": "S y a", "しゅ": "S y M", "しょ": "S y o",
+    "ちゃ": "t y a", "ちゅ": "t y M", "ちょ": "t y o",
+    "にゃ": "n y a", "にゅ": "n y M", "にょ": "n y o",
+    "ひゃ": "h y a", "ひゅ": "h y M", "ひょ": "h y o",
+    "みゃ": "m y a", "みゅ": "m y M", "みょ": "m y o",
+    "りゃ": "r y a", "りゅ": "r y M", "りょ": "r y o",
+    "ぎゃ": "g y a", "ぎゅ": "g y M", "ぎょ": "g y o",
+    "じゃ": "j y a", "じゅ": "j y M", "じょ": "j y o",
+    "びゃ": "b y a", "びゅ": "b y M", "びょ": "b y o",
+    "ぴゃ": "p y a", "ぴゅ": "p y M", "ぴょ": "p y o",
+}
+
 _KANA_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
 _KANJI_RE = re.compile(r"[\u4e00-\u9fff]")
 
@@ -139,6 +173,25 @@ def to_phonemes(text: str) -> list:
             phonemes.append(_YOON_MAP[ch])
         elif ch in _KANA_MAP:
             phonemes.append(_KANA_MAP[ch])
+        elif ch.isspace():
+            continue
+        else:
+            phonemes.append(None)  # 汉字等，需人工读音
+    return phonemes
+
+
+def to_vocaloid_phonemes(text: str) -> list:
+    """
+    把日文文本转成 VOCALOID 合成引擎要求的「空格分隔音素序列」列表。
+
+    与 to_phonemes（罗马音音节，如 sa）不同，VOCALOID 的 phoneme 字段
+    必须是空格分隔的音素序列（如 さ → "s a"、く → "k M"），否则歌词不渲染。
+    """
+    seq = _split_kana_sequence(text)
+    phonemes = []
+    for ch in seq:
+        if ch in _KANA_PHONEME:
+            phonemes.append(_KANA_PHONEME[ch])
         elif ch.isspace():
             continue
         else:
