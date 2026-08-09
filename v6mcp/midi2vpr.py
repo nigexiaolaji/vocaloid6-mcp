@@ -214,17 +214,34 @@ def _extract_note_data(pm: pretty_midi.PrettyMIDI, bpm: float, lyrics: str | Non
 
 
 def _discover_voicebanks() -> list:
-    """扫描 VOCALOID6 声库目录，返回 [(compID, name)]（空则返回占位）。"""
+    """扫描本机 VOCALOID 声库，返回 [(compID, name)]（按优先级：E:\\VoiceDB → ProgramData）。
+
+    声库目录结构：<根>/<compID 16位>/<声库名>.vvd
+    """
     import glob
 
-    apd = glob.glob(
-        os.path.expandvars(r"%ProgramData%/Yamaha/VXBeta/voicebanks/apd/[A-Z0-9]*")
-    )
+    roots = [
+        r"E:\VoiceDB",
+        os.path.expandvars(r"%ProgramData%\Yamaha\VXBeta\voicebanks\apd"),
+        os.path.expandvars(r"%ProgramFiles%\Common Files\VOCALOID6\Model"),
+    ]
     banks = []
-    for d in apd:
-        cid = os.path.basename(d)
-        if len(cid) == 16 and cid.isalnum():
-            banks.append((cid, cid))  # prof.vpl 是二进制，name 先用 compID 占位
+    seen = set()
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        # compID 目录可能在两级下：<root>/<声库组>/<compID>/ 或 <root>/<compID>/
+        for d in sorted(glob.glob(os.path.join(root, "*")) + glob.glob(os.path.join(root, "*", "*"))):
+            cid = os.path.basename(d)
+            if not (len(cid) == 16 and cid.isalnum()) or cid in seen:
+                continue
+            # 声库名优先取 *.vvd 文件名
+            name = cid
+            vvds = glob.glob(os.path.join(d, "*.vvd"))
+            if vvds:
+                name = os.path.splitext(os.path.basename(vvds[0]))[0]
+            banks.append((cid, name))
+            seen.add(cid)
     return banks or [("VOCALOID6", "VOCALOID6")]
 
 
@@ -324,7 +341,11 @@ def midi_to_vpr(
                                 "number": nd[2],
                                 "velocity": nd[3],
                                 "exp": {},
-                                "singingSkill": None,
+                                # singingSkill 必须为有效对象（参考 v4to5.rs），null 会导致音符/歌词不渲染
+                                "singingSkill": {
+                                    "duration": 0,
+                                    "weight": {"pre": 64, "post": 64},
+                                },
                                 "vibrato": {"type": 0, "duration": 0},
                             }
                             for nd in note_data
