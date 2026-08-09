@@ -84,7 +84,8 @@ def template_melody_midi(
     beat = 60.0 / float(tempo)
 
     # 简单旋律走向：从根音出发，音阶内游走，句尾回落
-    pitches = [key_offset + d for d in scale_table]
+    # 基准八度 60（中央 C）+ 调性偏移 + 音阶相对音程
+    pitches = [60 + key_offset + d for d in scale_table]
     note_idx = 0
     direction = 1
     for i in range(count):

@@ -141,7 +141,9 @@ def midi_to_vsqx(
 
     vsqx_params = [
         VENDER, VERSION,
-        [],                        # vVoiceTable（空，__write_vVoice__ 处理）
+        # vVoiceTable：必须与 vsPart 的 singer [t, bs, pc] 对应（bs=0, pc=5），
+        # 空表会导致 VOCALOID6 找不到歌手而拒绝打开文件
+        [[0, 5, "VOCALOID6", "VOCALOID6", [0, 0, 0, 0, 0]]],
         _build_mixer(),            # mixer
         master_track,
         vs_tracks,
