@@ -9,6 +9,11 @@ test_out/
 *.vsqx
 *.mid
 
+# 模型权重（334MB+，不应入库；可用 modelscope 下载）
+checkpoints/
+*.safetensors
+*.ckpt
+
 # vendored 库源码的 clone 副本（vsqxt/ 是已复制的正式 vendored 包，保留）
 _vsqx_src/
 _vsqxt_src/

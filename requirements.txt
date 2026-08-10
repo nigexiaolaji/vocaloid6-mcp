@@ -5,3 +5,7 @@ pretty_midi>=0.2.10
 numpy>=1.24
 # render_wav（方案 B）：pywinauto UI 自动化渲染导出 WAV
 pywinauto>=0.6.8
+# MIDI-GPT 引擎（compose_song engine=midigpt）：inference extra 提供 safetensors 支持
+midigpt[inference]>=0.3.3
+torch>=2.0
+tqdm>=4.66

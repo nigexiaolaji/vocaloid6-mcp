@@ -391,6 +391,9 @@ def midigpt_melody_midi(
             top_p=0.95,
             model_dim=bars,
             seed=seed,
+            # 微调权重（基于 yellow_medium）vocab 无 MaskBar token，
+            # mask_mode 默认 "token" 会报错；"remove"=未来小节直接从 token 流省略
+            mask_mode="remove",
         ),
     )
     result = engine.session(score, request).run()
