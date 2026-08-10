@@ -173,9 +173,9 @@ def structured_melody_midi(
     sections = _STRUCTURES.get(structure, _STRUCTURES["pop"])
     total_bars = sum(bars for _, bars, _ in sections)
 
-    # 音符数量：歌词音节数优先，否则按小节数 × 4 音
-    syll = _syllable_count(lyrics, fallback=total_bars * 4)
-    count = max(syll, total_bars)  # 至少每小节一个音
+    # 音符数量 = 歌词音节数（歌曲长度由歌词决定，而不是被结构小节数撑长）
+    syll = _syllable_count(lyrics, fallback=8)
+    count = max(syll, 1)
 
     beat = 60.0 / float(tempo)
     pm = pretty_midi.PrettyMIDI(initial_tempo=float(tempo))
@@ -202,9 +202,10 @@ def structured_melody_midi(
             chord_root, chord_type = chords[_b % len(chords)]
             bar_chords.append((sec_name, chord_root, chord_type, scfg))
 
-    # 音符连续排列：把 count 个音均匀铺满整曲（首尾相接、无空白 → 演唱连贯）
-    total_beats = total_bars * 4
-    note_len = beat * total_beats / count  # 每音符时长（秒）
+    # 每音节 1 拍（情感/风格可微调 0.5~2 拍），音符首尾相接 → 演唱连贯、不拖长
+    dur_mult = e_cfg["dur"] if emotion else s["dur_mult"]
+    note_beats = max(0.5, min(2.0, dur_mult))
+    note_len = beat * note_beats  # 每音符时长（秒）
     prev_pitch = None
     for i in range(count):
         t = i * note_len
