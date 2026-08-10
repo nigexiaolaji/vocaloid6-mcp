@@ -70,15 +70,15 @@ def _pick_melody_track(pm: pretty_midi.PrettyMIDI):
 
 
 def _assign_lyrics(note_count: int, lyrics: str | None) -> list:
-    """把歌词音素分配给音符；不足补默认音节，多余截断。"""
+    """把歌词音素分配给音符；音符多于音节时循环重复歌词（保持演唱连贯），无歌词才用默认音。"""
     if lyrics:
         phonemes = [p for p in to_phonemes(lyrics) if p]
     else:
         phonemes = []
     out = []
     for i in range(note_count):
-        if i < len(phonemes):
-            out.append(phonemes[i])
+        if phonemes:
+            out.append(phonemes[i % len(phonemes)])  # 循环铺满所有音符
         else:
             out.append(DEFAULT_LYRIC)
     return out
@@ -219,8 +219,8 @@ def _extract_note_data(pm: pretty_midi.PrettyMIDI, bpm: float, lyrics: str | Non
         ]
     out = []
     for i, n in enumerate(notes_sorted):
-        if i < len(pairs):
-            lyric, ph = pairs[i]
+        if pairs:
+            lyric, ph = pairs[i % len(pairs)]  # 循环铺满：音符多于歌词时重复演唱
         else:
             lyric = ph = DEFAULT_LYRIC
         out.append(

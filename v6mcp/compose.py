@@ -372,7 +372,9 @@ def midigpt_melody_midi(
         )
 
     syll = _syllable_count(lyrics, fallback=bars * 4)
-    bars = max(4, (syll + 3) // 4)  # 每小节约 4 音节，最少 4 小节
+    # model_dim 必须落在预训练 vocab domain（yellow_medium 支持 [4, 8]），
+    # 超过会报 "model_dim not in vocab domain"；歌词循环铺满机制会覆盖所有音符
+    bars = max(4, min(8, (syll + 3) // 4))
 
     engine = InferenceEngine.from_checkpoint(ckpt)
     score = Score(
