@@ -37,6 +37,71 @@ _KEYS = {
     "F#": 6, "Gb": 6, "G": 7, "G#": 8, "Ab": 8, "A": 9, "A#": 10, "Bb": 10, "B": 11,
 }
 
+# 和弦进行（半音偏移，相对主音；大调）
+#   I=V 级数：I=0, ii=2, iii=4, IV=5, V=7, vi=9, vii=11
+_CHORD_PROGRESSIONS_MAJOR = {
+    "I-V-vi-IV":     [0, 7, 9, 5],    # 最流行：C-G-Am-F
+    "vi-IV-I-V":     [9, 5, 0, 7],    # 卡农式：Am-F-C-G
+    "I-vi-IV-V":     [0, 9, 5, 7],    # 50s 进行：C-Am-F-G
+    "I-IV-V":        [0, 5, 7],       # 蓝调摇滚：C-F-G
+    "I-V-IV":        [0, 7, 5],       # 简单明亮：C-G-F
+    "vi-V-IV":       [9, 7, 5],       # 小调感：Am-G-F
+}
+
+# 小调进行（自然小调：i=0, III=3, iv=5, v=7, VI=8, VII=10）
+_CHORD_PROGRESSIONS_MINOR = {
+    "i-VI-III-VII":  [0, 8, 3, 10],   # 经典小调：Am-F-C-G
+    "i-iv-VII-VI":   [0, 5, 10, 8],   # 和声感：Am-Dm-G-F
+    "i-VII-VI-V":    [0, 10, 8, 7],   # 下行：Am-G-F-E
+    "i-iv-v":        [0, 5, 7],       # 朴素：Am-Dm-Em
+}
+
+# 三和弦音（半音，0=根音）
+_TRIADS_MAJOR = (0, 4, 7)    # 大三和弦
+_TRIADS_MINOR = (0, 3, 7)    # 小三和弦
+# 和弦性质：进行里每个根音对应的和弦类型（大/小）
+# 大调音级：I 大 ii 小 iii 小 IV 大 V 大 vi 小 vii 减（按 vi 小处理）
+_MAJOR_DEGREE_TYPE = {0: "M", 2: "m", 4: "m", 5: "M", 7: "M", 9: "m", 11: "m"}
+# 小调音级：i 小 III 大 iv 小 v 小(和声大) VI 大 VII 大
+_MINOR_DEGREE_TYPE = {0: "m", 3: "M", 5: "m", 7: "m", 8: "M", 10: "M"}
+
+# 歌曲结构模板：段序列（每段小节数，和弦进行 key）
+#   verse 主歌（平稳）、chorus 副歌（明亮/高潮）、bridge 桥段（对比）、intro/outro
+_STRUCTURES = {
+    "pop": [
+        ("verse", 4, "I-V-vi-IV"),
+        ("chorus", 4, "vi-IV-I-V"),
+        ("verse", 4, "I-V-vi-IV"),
+        ("chorus", 4, "vi-IV-I-V"),
+        ("bridge", 2, "vi-IV-I-V"),
+        ("chorus", 4, "I-V-vi-IV"),
+    ],
+    "simple": [
+        ("verse", 4, "I-V-vi-IV"),
+        ("chorus", 4, "I-V-vi-IV"),
+        ("verse", 4, "I-V-vi-IV"),
+        ("chorus", 4, "I-V-vi-IV"),
+    ],
+    "ballad": [
+        ("intro", 2, "vi-IV-I-V"),
+        ("verse", 4, "I-vi-IV-V"),
+        ("chorus", 4, "vi-IV-I-V"),
+        ("verse", 4, "I-vi-IV-V"),
+        ("bridge", 2, "IV-V-vi"),
+        ("chorus", 4, "vi-IV-I-V"),
+        ("outro", 2, "I-V-vi-IV"),
+    ],
+}
+
+# 每段情感/力度基调（段名 → 力度基数偏移）
+_SECTION_CFG = {
+    "intro":  {"vel": -8, "base": -2, "dur": 1.6},
+    "verse":  {"vel": 0,  "base": 0,  "dur": 1.0},
+    "chorus": {"vel": 10, "base": 4,  "dur": 0.8},
+    "bridge": {"vel": 4,  "base": -4, "dur": 1.3},
+    "outro":  {"vel": -5, "base": -3, "dur": 1.8},
+}
+
 
 def _resolve_key(key) -> int:
     """把 key 参数解析为半音偏移：支持数字（0-11）或调名（C/Dm/Eb 等）。"""
@@ -56,6 +121,128 @@ def _syllable_count(lyrics: str | None, fallback: int = 8) -> int:
     return max(len(ph), 1)
 
 
+def _chord_pool(key_offset: int, scale: str, chord_root: int, chord_type: str) -> list:
+    """返回当前和弦的可用旋律音（半音 pitch，含高八度）。"""
+    base = 60 + key_offset + chord_root
+    triad = _TRIADS_MAJOR if chord_type == "M" else _TRIADS_MINOR
+    # 和弦音 + 高八度根音，落在一个八度内，便于旋律选音
+    pool = [base + t for t in triad]
+    pool.append(base + 12)
+    return pool
+
+
+def _section_chords(section: str, scale: str, prog_key: str, key_offset: int):
+    """把某段的和弦进行展开成逐小节 (根音半音, 和弦类型) 列表。"""
+    if scale == "minor" or scale == "minor_penta":
+        prog = _CHORD_PROGRESSIONS_MINOR.get(prog_key, _CHORD_PROGRESSIONS_MINOR["i-VI-III-VII"])
+        degree_type = _MINOR_DEGREE_TYPE
+    else:
+        prog = _CHORD_PROGRESSIONS_MAJOR.get(prog_key, _CHORD_PROGRESSIONS_MAJOR["I-V-vi-IV"])
+        degree_type = _MAJOR_DEGREE_TYPE
+    chords = []
+    for root in prog:
+        chords.append((root, degree_type.get(root, "M")))
+    return chords
+
+
+def structured_melody_midi(
+    lyrics: str | None = None,
+    tempo: float = 120.0,
+    key: int | str | None = None,
+    scale: str = "major",
+    style: str = "default",
+    structure: str = "pop",
+    out_path: str | None = None,
+    seed: int = 42,
+    emotion: str | None = None,
+) -> str:
+    """
+    结构化旋律：和弦进行驱动 + 歌曲结构（verse/chorus/bridge）+ 力度起伏。
+
+    @param structure: pop / simple / ballad（歌曲结构模板）
+    @param emotion: 情感（影响音域/音长/力度基调）
+    @return: 生成的 .mid 路径
+    """
+    from .emotion import emotion_params
+
+    rng = random.Random(seed)
+    key_offset = _resolve_key(key)
+    s = _STYLES.get(style, _STYLES["default"])
+    ep = emotion_params(emotion)
+
+    sections = _STRUCTURES.get(structure, _STRUCTURES["pop"])
+    total_bars = sum(bars for _, bars, _ in sections)
+
+    # 音符数量：歌词音节数优先，否则按小节数 × 4 音
+    syll = _syllable_count(lyrics, fallback=total_bars * 4)
+    count = max(syll, total_bars)  # 至少每小节一个音
+
+    beat = 60.0 / float(tempo)
+    pm = pretty_midi.PrettyMIDI(initial_tempo=float(tempo))
+    inst = pretty_midi.Instrument(program=0)
+
+    # 情感 → 旋律倾向（与 template 一致，供各段叠加）
+    emotion_registry = {
+        "happy":      {"base": 65, "vel": 100, "dur": 0.8, "jump": [-2, -1, 0, 1, 2]},
+        "sad":        {"base": 55, "vel": 62,  "dur": 1.6, "jump": [-1, 0, 1]},
+        "gentle":     {"base": 58, "vel": 74,  "dur": 1.4, "jump": [-1, 0, 1]},
+        "passionate": {"base": 67, "vel": 115, "dur": 0.7, "jump": [-2, -1, 0, 1, 2, 3]},
+        "rock":       {"base": 62, "vel": 122, "dur": 0.6, "jump": [-3, -2, 1, 2, 3]},
+        "calm":       {"base": 57, "vel": 68,  "dur": 1.8, "jump": [-1, 0, 1]},
+        "default":    {"base": 60, "vel": 90,  "dur": 1.0, "jump": [-1, 0, 1]},
+    }
+    e_cfg = emotion_registry.get(ep["_key"], emotion_registry["default"])
+
+    # 预建「小节索引 → (段配置, 和弦)」映射，供音符按时间定位
+    bar_chords = []  # (sec_name, chord_root, chord_type, scfg)
+    for sec_name, bars, prog_key in sections:
+        chords = _section_chords(sec_name, scale, prog_key, key_offset)
+        scfg = _SECTION_CFG.get(sec_name, {"vel": 0, "base": 0, "dur": 1.0})
+        for _b in range(bars):
+            chord_root, chord_type = chords[_b % len(chords)]
+            bar_chords.append((sec_name, chord_root, chord_type, scfg))
+
+    # 音符连续排列：把 count 个音均匀铺满整曲（首尾相接、无空白 → 演唱连贯）
+    total_beats = total_bars * 4
+    note_len = beat * total_beats / count  # 每音符时长（秒）
+    prev_pitch = None
+    for i in range(count):
+        t = i * note_len
+        bar_idx = int(t / (4 * beat)) % len(bar_chords)
+        sec_name, chord_root, chord_type, scfg = bar_chords[bar_idx]
+        pool = _chord_pool(key_offset, scale, chord_root, chord_type)
+        # 段基调 + 情感基准
+        base_pitch = e_cfg["base"] + scfg["base"]
+        vel = max(20, min(127, e_cfg["vel"] + scfg["vel"]))
+        # 选音：优先和弦音（概率 70%），否则音阶经过音；句尾回落
+        if i >= count - 2:
+            pitch = pool[0]  # 落回和弦根音
+        elif rng.random() < 0.7:
+            pitch = rng.choice(pool)
+        else:
+            step = rng.choice(s["jump"])
+            pitch = prev_pitch + step if prev_pitch is not None else pool[rng.randrange(len(pool))]
+        pitch = max(48, min(84, pitch))
+        # 小节强拍（每小节第 1 拍）力度略高 → 起伏感
+        beat_vel = vel + (8 if int(t / beat) % 4 == 0 else -6)
+        beat_vel = max(20, min(127, beat_vel))
+        inst.notes.append(
+            pretty_midi.Note(
+                velocity=beat_vel,
+                pitch=pitch,
+                start=t,
+                end=t + note_len,
+            )
+        )
+        prev_pitch = pitch
+
+    pm.instruments.append(inst)
+    if not out_path:
+        out_path = os.path.join(tempfile.gettempdir(), "structured_melody.mid")
+    pm.write(out_path)
+    return out_path
+
+
 def template_melody_midi(
     lyrics: str | None = None,
     tempo: float = 120.0,
@@ -64,44 +251,67 @@ def template_melody_midi(
     style: str = "default",
     out_path: str | None = None,
     seed: int = 42,
+    emotion: str | None = None,
+    structure: str | None = None,
 ) -> str:
     """
-    降级模板旋律：按歌词音节数生成简单旋律 MIDI。
+    旋律生成（兼容入口）：structure 给定则走和弦驱动结构生成，否则用简单模板。
 
-    @param key: 调性（数字半音偏移 0-11，或调名 "C"/"Dm"/"Eb"）
-    @param scale: major / minor / pentatonic / minor_penta
-    @param style: default / calm / lively（影响跳进与时值）
-    @return: 生成的 .mid 路径
+    @param structure: pop / simple / ballad / None（None=简单模板）
     """
+    if structure:
+        return structured_melody_midi(
+            lyrics=lyrics, tempo=tempo, key=key, scale=scale, style=style,
+            structure=structure, out_path=out_path, seed=seed, emotion=emotion,
+        )
+    from .emotion import emotion_params
+
     rng = random.Random(seed)
     count = _syllable_count(lyrics)
     key_offset = _resolve_key(key)
     scale_table = _SCALES.get(scale, _SCALES["major"])
     s = _STYLES.get(style, _STYLES["default"])
+    ep = emotion_params(emotion)
 
     pm = pretty_midi.PrettyMIDI(initial_tempo=float(tempo))
     inst = pretty_midi.Instrument(program=0)
     beat = 60.0 / float(tempo)
 
+    # 情感 → 旋律倾向：
+    #   快乐/激昂/摇滚：基准音域高、音长短、力度大、跳进大
+    #   悲伤/温柔/平静：基准音域低、音长长、力度小、跳进小
+    emotion_registry = {
+        "happy":      {"base": 65, "vel": 100, "dur": 0.8, "jump": [-2, -1, 0, 1, 2]},
+        "sad":        {"base": 55, "vel": 62,  "dur": 1.6, "jump": [-1, 0, 1]},
+        "gentle":     {"base": 58, "vel": 74,  "dur": 1.4, "jump": [-1, 0, 1]},
+        "passionate": {"base": 67, "vel": 115, "dur": 0.7, "jump": [-2, -1, 0, 1, 2, 3]},
+        "rock":       {"base": 62, "vel": 122, "dur": 0.6, "jump": [-3, -2, 1, 2, 3]},
+        "calm":       {"base": 57, "vel": 68,  "dur": 1.8, "jump": [-1, 0, 1]},
+        "default":    {"base": 60, "vel": 90,  "dur": 1.0, "jump": [-1, 0, 1]},
+    }
+    e_cfg = emotion_registry.get(ep["_key"], emotion_registry["default"])
+    base_pitch = e_cfg["base"] + key_offset
+    jumps = e_cfg["jump"] if emotion else s["jump"]
+    dur_mult = e_cfg["dur"] if emotion else s["dur_mult"]
+
     # 简单旋律走向：从根音出发，音阶内游走，句尾回落
-    # 基准八度 60（中央 C）+ 调性偏移 + 音阶相对音程
-    pitches = [60 + key_offset + d for d in scale_table]
+    pitches = [base_pitch + d for d in scale_table]
     note_idx = 0
     direction = 1
     for i in range(count):
-        note_idx += rng.choice(s["jump"]) * direction
+        note_idx += rng.choice(jumps) * direction
         note_idx = max(0, min(len(pitches) - 1, note_idx))
         if rng.random() < s["flip"]:
             direction *= -1
         pitch = pitches[note_idx]
-        dur = beat * s["dur_mult"]
+        dur = beat * dur_mult
         # 句尾（最后 1-2 个音）回落收束
         if i >= count - 2:
             pitch = pitches[0]
             dur = beat * 2
         inst.notes.append(
             pretty_midi.Note(
-                velocity=90,
+                velocity=e_cfg["vel"],
                 pitch=pitch,
                 start=i * beat,
                 end=i * beat + dur,
@@ -123,6 +333,9 @@ def compose_song(
     scale: str = "major",
     length_bars: int = 8,
     out_dir: str | None = None,
+    voice: str | None = None,
+    emotion: str | None = None,
+    structure: str | None = None,
 ) -> dict:
     """
     MCP 工具 compose_song 的底层实现（降级模板路径）。
@@ -130,6 +343,9 @@ def compose_song(
     @param style: default / calm / lively（旋律风格）
     @param key: 调性（数字 0-11 或调名 "C"/"Dm"/"Eb"）
     @param scale: major / minor / pentatonic / minor_penta
+    @param voice: 歌姬名或 compID（如 "MIKU_V4X_Original_EVEC"）
+    @param emotion: 情感（happy/sad/gentle/passionate/rock/calm 或中文别名）
+    @param structure: pop / simple / ballad / None（和弦进行 + 主歌/副歌/桥段结构）
     @return: {status, midi_path, vsqx_path, note_count, tempo, elapsed_sec}
     """
     import time
@@ -148,6 +364,8 @@ def compose_song(
         scale=scale,
         style=style,
         out_path=os.path.join(out_dir, song_name + ".mid"),
+        emotion=emotion,
+        structure=structure,
     )
 
     result = midi_to_vocaloid(
@@ -156,6 +374,8 @@ def compose_song(
         song_name=song_name,
         tempo=tempo,
         out_dir=out_dir,
+        voice=voice,
+        emotion=emotion,
     )
     result.update(
         {
@@ -165,6 +385,10 @@ def compose_song(
             "key": str(key) if key is not None else "C",
             "scale": scale,
             "style": style,
+            "structure": structure or "none",
+            "voice": voice or result.get("voice", ""),
+            "emotion": result.get("emotion", ""),
+            "emotion_label": result.get("emotion_label", ""),
             "elapsed_sec": round(time.time() - t0, 2),
         }
     )

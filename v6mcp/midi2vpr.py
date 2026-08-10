@@ -37,6 +37,30 @@ def _sec_to_ticks(sec: float, bpm: float) -> int:
     return int(round(sec * RESOLUTION * bpm / 60.0))
 
 
+def _resolve_bpm(pm: pretty_midi.PrettyMIDI, tempo: float | None = None) -> float:
+    """解析 BPM：显式 tempo 优先 → MIDI tempo 事件 → estimate_tempo → 兜底 120。
+
+    estimate_tempo 在音符少于 2 个时会抛 ValueError，这里统一防御。
+    """
+    if tempo and 30 < float(tempo) < 300:
+        return float(tempo)
+    try:
+        _, tempos = pm.get_tempo_changes()
+        if len(tempos):
+            bpm = float(tempos[0])
+            if 30 < bpm < 300:
+                return bpm
+    except Exception:
+        pass
+    try:
+        est = pm.estimate_tempo()
+        if 30 < est < 300:
+            return est
+    except Exception:
+        pass
+    return 120.0
+
+
 def _pick_melody_track(pm: pretty_midi.PrettyMIDI):
     """取第一条有音符的非鼓轨作为主旋律。"""
     for inst in pm.instruments:
@@ -103,9 +127,7 @@ def midi_to_vsqx(
     mel = _pick_melody_track(pm)
 
     # 取 tempo（MIDI 元数据优先，兜底估计值）
-    bpm = tempo or (pm.estimate_tempo() if pm.get_tempo_changes()[1] else 120.0)
-    if bpm <= 0 or bpm > 300:
-        bpm = 120.0
+    bpm = _resolve_bpm(pm, tempo)
 
     song = song_name or os.path.splitext(os.path.basename(midi_path))[0]
     if not out_path:
@@ -214,17 +236,33 @@ def _extract_note_data(pm: pretty_midi.PrettyMIDI, bpm: float, lyrics: str | Non
     return out
 
 
-def _discover_voicebanks() -> list:
-    """扫描本机 VOCALOID 声库，返回 [(compID, name)]（按优先级：E:\\VoiceDB → ProgramData）。
+# V6 内置声库官方名单（vtb2 加密，compID 需在 V6 编辑器确认）
+V6_BUILTIN_VOICES = [
+    # (名字, 语言, 类型)
+    ("HARUKA", "日语/英语/中文", "AI 女声"),
+    ("AKITO", "日语/英语/中文", "AI 男声"),
+    ("SARAH", "英语/日语/中文", "AI 女声"),
+    ("ALLEN", "英语/日语/中文", "AI 男声"),
+    ("Amy", "日语", "标准女声"),
+    ("Chris", "日语", "标准男声"),
+    ("Kaori", "日语", "标准女声"),
+    ("Ken", "日语", "标准男声"),
+]
 
-    声库目录结构：<根>/<compID 16位>/<声库名>.vvd
+
+def _discover_voicebanks() -> list:
+    """扫描本机 VOCALOID 声库，返回 [(compID, name, kind)]。
+
+    kind: "vvd"=真实发现的声库（vvd 文件） / "vtb2"=V6 内置声库（加密包）
+    扫描位置：ProgramData\\Yamaha\\VXBeta\\voicebanks\\apd → E:\\VoiceDB → V6 Model 目录。
     """
     import glob
 
     roots = [
-        r"E:\VoiceDB",
         os.path.expandvars(r"%ProgramData%\Yamaha\VXBeta\voicebanks\apd"),
+        r"E:\VoiceDB",
         os.path.expandvars(r"%ProgramFiles%\Common Files\VOCALOID6\Model"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Common Files\VOCALOID6\Model"),
     ]
     banks = []
     seen = set()
@@ -236,23 +274,84 @@ def _discover_voicebanks() -> list:
             cid = os.path.basename(d)
             if not (len(cid) == 16 and cid.isalnum()) or cid in seen:
                 continue
-            # 声库名优先取 *.vvd 文件名
+            # 声库名优先取 *.vvd 文件名；无 vvd 时尝试 *.vvd 同目录其他标记
             name = cid
             vvds = glob.glob(os.path.join(d, "*.vvd"))
             if vvds:
                 name = os.path.splitext(os.path.basename(vvds[0]))[0]
-            banks.append((cid, name))
+            banks.append((cid, name, "vvd"))
             seen.add(cid)
-    return banks or [("VOCALOID6", "VOCALOID6")]
+
+    # 检测 V6 内置声库包（vtb2）：确认 V6 AI 声库已安装，但 compID 需编辑器确认
+    model_dirs = [
+        os.path.expandvars(r"%ProgramFiles%\Common Files\VOCALOID6\Model"),
+        os.path.expandvars(r"%ProgramFiles(x86)%\Common Files\VOCALOID6\Model"),
+    ]
+    vtb2_found = False
+    for md in model_dirs:
+        if md and os.path.isdir(md) and glob.glob(os.path.join(md, "**", "*.vtb2"), recursive=True):
+            vtb2_found = True
+            break
+    if vtb2_found:
+        banks.append(("__V6_BUILTIN__", "VOCALOID6 内置声库", "vtb2"))
+
+    return banks or [("VOCALOID6", "VOCALOID6", "vvd")]
+
+
+def list_voicebanks() -> list:
+    """列出本机可用歌姬（MCP 工具 list_voicebanks 的底层实现）。
+
+    @return: [{comp_id, name, kind, lang, type, usable}]
+    """
+    out = []
+    for cid, name, kind in _discover_voicebanks():
+        if kind == "vtb2":
+            # 内置声库包：展开官方名单，compID 未定
+            for vb_name, lang, vtype in V6_BUILTIN_VOICES:
+                out.append(
+                    {
+                        "comp_id": None,
+                        "name": vb_name,
+                        "kind": "vtb2",
+                        "lang": lang,
+                        "type": vtype,
+                        "usable": False,  # 需在 V6 编辑器确认 compID 后才能写入工程
+                        "hint": "V6 内置 AI 声库（加密包），选中后请先在 V6 编辑器确认，或将 voice 指定为已发现的声库名",
+                    }
+                )
+        else:
+            out.append(
+                {
+                    "comp_id": cid,
+                    "name": name,
+                    "kind": kind,
+                    "lang": "",
+                    "type": "",
+                    "usable": True,
+                    "hint": "",
+                }
+            )
+    return out
 
 
 def _pick_voice(voice_comp_id: str | None, voice_name: str | None) -> tuple:
-    """选择声库：显式指定优先，否则取本机发现的第一个真实声库。"""
+    """选择声库：显式 compID 优先 → 名字匹配（不区分大小写/包含）→ 第一个真实声库。
+
+    @return: (compID, name)
+    """
     banks = _discover_voicebanks()
+    real = [(cid, nm) for cid, nm, kind in banks if kind == "vvd"]
     if voice_comp_id:
         return voice_comp_id, voice_name or voice_comp_id
-    cid, name = banks[0]
-    return cid, voice_name or name
+    if voice_name:
+        vn = voice_name.strip().lower()
+        for cid, nm in real:
+            if nm.lower() == vn or vn in nm.lower() or nm.lower() in vn:
+                return cid, nm
+        # 找不到精确/包含匹配：仍以用户指定名字为准（V6 打开时如无该声库会提示）
+        return real[0][0] if real else "VOCALOID6", voice_name
+    cid, name = real[0] if real else ("VOCALOID6", "VOCALOID6")
+    return cid, name
 
 
 def midi_to_vpr(
@@ -263,6 +362,7 @@ def midi_to_vpr(
     out_path: str | None = None,
     voice_comp_id: str | None = None,
     voice_name: str | None = None,
+    emotion: str | None = None,
 ) -> dict:
     """
     MIDI → VOCALOID6 原生工程文件 .vpr（zip + Project/sequence.json）。
@@ -270,18 +370,20 @@ def midi_to_vpr(
     VOCALOID6 的原生格式是 VPR（JSON），VSQX(XML) 仅为兼容读取且校验严格。
     直接生成 VPR 可保证 V6 正常打开。声库默认自动发现本机安装的真实声库。
 
+    @param emotion: 情感（happy/sad/gentle/passionate/rock/calm 或中文别名），
+                    控制音符力度/开音/颤音与 Part 级控制器曲线
     @return: {vpr_path, note_count, tempo, duration_sec, note_data, voice_comp_id}
     """
     import json
     import zipfile
 
+    from .emotion import apply_to_note, build_controllers, emotion_params
+
     if not os.path.exists(midi_path):
         raise FileNotFoundError(f"MIDI 文件不存在: {midi_path}")
 
     pm = pretty_midi.PrettyMIDI(midi_path)
-    bpm = tempo or (pm.estimate_tempo() if pm.get_tempo_changes()[1] else 120.0)
-    if bpm <= 0 or bpm > 300:
-        bpm = 120.0
+    bpm = _resolve_bpm(pm, tempo)
 
     song = song_name or os.path.splitext(os.path.basename(midi_path))[0]
     if not out_path:
@@ -294,6 +396,32 @@ def midi_to_vpr(
 
     total_ticks = _sec_to_ticks(pm.get_end_time(), bpm) or 7680
     tempo_val = int(bpm * 100)
+    ep = emotion_params(emotion)  # {"_key","_label",velocity,opening,vibrato_type,vibrato_dur,controllers}
+
+    def _note_dict(nd):
+        """按情感生成音符字典（velocity/exp/vibrato 来自情感映射）。"""
+        v = nd[3]  # MIDI velocity 作基线
+        velocity = ep["velocity"] if emotion else max(1, min(127, v))
+        opening = ep["opening"]
+        vt = ep["vibrato_type"]
+        vd = ep["vibrato_dur"]
+        return {
+            "lyric": nd[4],
+            # 真实 V6 工程：phoneme 为音素字符串（如 "y o"）；null 会导致歌词不显示
+            "phoneme": nd[5],
+            "isProtected": False,
+            "pos": nd[0],
+            "duration": nd[1],
+            "number": nd[2],
+            "velocity": velocity,
+            "exp": {"opening": opening},
+            # singingSkill 必须为有效对象（参考真实工程），null 会导致音符不渲染
+            "singingSkill": {
+                "duration": 0,
+                "weight": {"pre": 64, "post": 64},
+            },
+            "vibrato": {"type": vt, "duration": vd},
+        }
 
     seq = {
         "version": {"major": 5, "minor": 4, "revision": 0},
@@ -330,29 +458,11 @@ def midi_to_vpr(
                         "pos": 0,
                         "duration": total_ticks,
                         "styleName": "VOCALOID2 Compatible Style",
-                        "voice": {"compID": comp_id, "name": name},
+                        # 真实 V6 工程：part.voice 只有 compID + langID（0=日语），不含 name
+                        "voice": {"compID": comp_id, "langID": 0},
                         "midiEffects": [],
-                        "notes": [
-                            {
-                                "lyric": nd[4],
-                                # 对照用户真实 V6 工程：phoneme 应为 None，
-                                # VOCALOID6 会从 lyric 假名自动生成音素（填序列反而不显示）
-                                "phoneme": None,
-                                "isProtected": False,
-                                "pos": nd[0],
-                                "duration": nd[1],
-                                "number": nd[2],
-                                "velocity": nd[3],
-                                "exp": {"opening": 127},
-                                # singingSkill 必须为有效对象（参考真实工程），null 会导致音符不渲染
-                                "singingSkill": {
-                                    "duration": 0,
-                                    "weight": {"pre": 64, "post": 64},
-                                },
-                                "vibrato": {"type": 0, "duration": 0},
-                            }
-                            for nd in note_data
-                        ],
+                        "notes": [_note_dict(nd) for nd in note_data],
+                        "controllers": build_controllers(emotion, total_ticks),
                     }
                 ],
             }
@@ -368,6 +478,8 @@ def midi_to_vpr(
         "tempo": round(bpm, 2),
         "duration_sec": round(pm.get_end_time(), 2),
         "note_data": note_data,
+        "emotion": ep["_key"],
+        "emotion_label": ep["_label"],
     }
 
 
@@ -377,9 +489,14 @@ def midi_to_vocaloid(
     song_name: str | None = None,
     tempo: float | None = None,
     out_dir: str | None = None,
+    voice: str | None = None,
+    emotion: str | None = None,
 ) -> dict:
     """
     MCP 工具 midi_to_vocaloid 的底层实现：MIDI → V6 原生 .vpr（主）+ .vsqx（备）。
+
+    @param voice: 歌姬名（如 "MIKU_V4X_Original_EVEC" / "HARUKA"）或 compID；缺省自动发现本机声库
+    @param emotion: 情感（happy/sad/gentle/passionate/rock/calm 或中文别名）
     @return: 结构化结果（含 vpr_path/vsqx_path 与统计）
     """
     t0 = time.time()
@@ -391,7 +508,18 @@ def midi_to_vocaloid(
     else:
         vpr_path = vsqx_path = None
 
-    result = midi_to_vpr(midi_path, lyrics, song_name, tempo, vpr_path)
+    voice_comp_id = None
+    voice_name = None
+    if voice:
+        # 允许用户直接传 compID（16 位大写字母数字）或名字
+        if len(voice) == 16 and voice.isalnum() and voice.isupper():
+            voice_comp_id = voice
+        else:
+            voice_name = voice
+
+    result = midi_to_vpr(midi_path, lyrics, song_name, tempo, vpr_path,
+                         voice_comp_id=voice_comp_id, voice_name=voice_name,
+                         emotion=emotion)
     # 兼容兜底：同时产出 vsqx（部分场景仍可能需要）
     try:
         vsqx_result = midi_to_vsqx(midi_path, lyrics, song_name, tempo, vsqx_path)

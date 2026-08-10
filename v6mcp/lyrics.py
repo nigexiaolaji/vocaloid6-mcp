@@ -77,15 +77,23 @@ _YOON = {
     "しゃ": "sha", "しゅ": "shu", "しょ": "sho",
 }
 
+def _hira_to_kata(ch: str) -> str:
+    """平假名 → 同音片假名（用于补全片假名音素表）。"""
+    code = ord(ch)
+    if 0x3040 <= code <= 0x309F:
+        return chr(code + 0x60)
+    return ch
+
+
 # 合并平/片假名查表
 _KANA_MAP = {}
 _KANA_MAP.update(_HIRA)
 _KANA_MAP.update(_KATA)
-# 拗音优先：两字组合先查
+# 拗音优先：两字组合先查（平/片假名都覆盖）
 _YOON_MAP = {}
 for k, v in _YOON.items():
     _YOON_MAP[k] = v
-    _YOON_MAP[k.upper() if False else k] = v  # 片假名拗音同样适用（假名本身区分）
+    _YOON_MAP["".join(_hira_to_kata(c) for c in k)] = v
 
 # VOCALOID 音素表：假名 → 空格分隔的音素序列（合成引擎要求，非罗马音音节）
 # 约定：う 系元音记作 M，ん 记作 N，し 记作 S i；参考 VOCALOID 标准音素表
@@ -121,8 +129,88 @@ _KANA_PHONEME = {
     "ぴゃ": "p y a", "ぴゅ": "p y M", "ぴょ": "p y o",
 }
 
+# 为片假名补全同音音素（VOCALOID 音素不分平/片假名）
+for _k, _v in list(_KANA_PHONEME.items()):
+    if all(0x3040 <= ord(c) <= 0x309F for c in _k):
+        _KANA_PHONEME["".join(_hira_to_kata(c) for c in _k)] = _v
+
+# 长音符 ー：作为元音延长（VOCALOID 常用 "-"）
+_KANA_PHONEME["ー"] = "-"
+# 促音 っ/ッ：VOCALOID 中写作无声休止（常用 "R" 或省略），这里映射为 "-" 保持音长
+_KANA_PHONEME["っ"] = "-"
+_KANA_PHONEME["ッ"] = "-"
+
 _KANA_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff]")
 _KANJI_RE = re.compile(r"[\u4e00-\u9fff]")
+
+# ============ 常用汉字 → 拼音（VOCALOID 中文声库用拼音作 lyric） ============
+# 覆盖常见歌词用字；未收录汉字会标记 unknown，可用 custom_pinyin 参数补充。
+_ZH_PINYIN = {
+    "我": "wo", "你": "ni", "他": "ta", "她": "ta", "它": "ta", "们": "men",
+    "爱": "ai", "心": "xin", "月": "yue", "花": "hua", "夜": "ye", "风": "feng",
+    "雨": "yu", "雪": "xue", "星": "xing", "光": "guang", "天": "tian", "地": "di",
+    "海": "hai", "山": "shan", "水": "shui", "火": "huo", "云": "yun", "日": "ri",
+    "春": "chun", "夏": "xia", "秋": "qiu", "冬": "dong", "年": "nian", "岁": "sui",
+    "时": "shi", "间": "jian", "梦": "meng", "想": "xiang", "歌": "ge", "曲": "qu",
+    "声": "sheng", "音": "yin", "乐": "yue", "路": "lu", "远": "yuan", "方": "fang",
+    "在": "zai", "不": "bu", "是": "shi", "的": "de", "了": "le", "和": "he",
+    "就": "jiu", "都": "dou", "会": "hui", "能": "neng", "要": "yao", "可": "ke",
+    "来": "lai", "去": "qu", "走": "zou", "回": "hui", "看": "kan", "听": "ting",
+    "说": "shuo", "笑": "xiao", "哭": "ku", "唱": "chang", "舞": "wu", "飞": "fei",
+    "过": "guo", "有": "you", "没": "mei", "别": "bie", "再": "zai", "见": "jian",
+    "之": "zhi", "中": "zhong", "上": "shang", "下": "xia", "前": "qian", "后": "hou",
+    "生": "sheng", "死": "si", "命": "ming", "魂": "hun", "灵": "ling", "妖": "yao",
+    "镇": "zhen", "城": "cheng", "古": "gu", "老": "lao", "小": "xiao", "大": "da",
+    "白": "bai", "红": "hong", "黑": "hei", "青": "qing", "绿": "lv", "蓝": "lan",
+    "金": "jin", "银": "yin", "剑": "jian", "刀": "dao", "书": "shu", "纸": "zhi",
+    "灯": "deng", "门": "men", "窗": "chuang", "影": "ying", "光": "guang",
+    "世": "shi", "界": "jie", "人": "ren", "情": "qing", "故": "gu", "事": "shi",
+    "未": "wei", "来": "lai", "永": "yong", "恒": "heng", "万": "wan", "千": "qian",
+    "等": "deng", "候": "hou", "望": "wang", "归": "gui", "相": "xiang", "遇": "yu",
+    "别": "bie", "离": "li", "散": "san", "聚": "ju", "缘": "yuan", "分": "fen",
+    "两": "liang", "个": "ge", "人": "ren", "双": "shuang", "眼": "yan", "泪": "lei",
+    "手": "shou", "心": "xin", "中": "zhong", "空": "kong", "满": "man", "明": "ming",
+    "暗": "an", "浅": "qian", "深": "shen", "长": "chang", "短": "duan",
+    "照": "zhao", "亮": "liang", "夜": "ye", "美": "mei", "好": "hao",
+    "行": "xing", "一": "yi", "是": "shi", "不": "bu", "在": "zai",
+    "这": "zhe", "那": "na", "里": "li", "处": "chu", "谁": "shei",
+    "何": "he", "无": "wu", "有": "you", "所": "suo", "以": "yi",
+    "为": "wei", "因": "yin", "果": "guo", "如": "ru", "若": "ruo",
+    "今": "jin", "昨": "zuo", "明": "ming", "当": "dang", "初": "chu",
+    "愿": "yuan", "战": "zhan", "斗": "dou", "苍": "cang", "茫": "mang",
+    "孤": "gu", "独": "du", "寂": "ji", "寞": "mo", "温": "wen",
+    "暖": "nuan", "寒": "han", "冷": "leng", "家": "jia", "乡": "xiang",
+    "望": "wang", "守": "shou", "护": "hu", "救": "jiu", "破": "po",
+    "立": "li", "新": "xin", "旧": "jiu", "强": "qiang", "弱": "ruo",
+    "真": "zhen", "假": "jia", "善": "shan", "恶": "e", "对": "dui",
+    "错": "cuo", "难": "nan", "易": "yi", "苦": "ku", "甜": "tian",
+    "万": "wan", "千": "qian", "百": "bai", "十": "shi", "数": "shu",
+    "里": "li", "外": "wai", "东": "dong", "西": "xi", "南": "nan",
+    "北": "bei", "从": "cong", "再": "zai", "还": "hai", "也": "ye",
+    "都": "dou", "才": "cai", "又": "you", "只": "zhi", "像": "xiang",
+}
+
+# 声母表（用于拼音 → VOCALOID 音素拆分）
+_ZH_INITIALS = ["zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k",
+                "h", "j", "q", "x", "r", "z", "c", "s", "y", "w"]
+
+
+def _pinyin_to_phonemes(pinyin: str) -> str:
+    """拼音 → VOCALOID 中文音素序列（声母逐字母 + 韵母逐字母）。
+
+    例：wo → "w o"，zhong → "z h o n g"（与 V4C 中文声库兼容）。
+    """
+    p = pinyin.lower().strip()
+    if not p:
+        return "-"
+    initial = ""
+    for ini in _ZH_INITIALS:
+        if p.startswith(ini):
+            initial = ini
+            p = p[len(ini):]
+            break
+    parts = list(initial) + list(p)
+    return " ".join(parts) if parts else "-"
 
 
 def _split_kana_sequence(text: str) -> list:
@@ -143,10 +231,19 @@ def _split_kana_sequence(text: str) -> list:
     return out
 
 
-def to_syllables(text: str) -> list:
+def _zh_pinyin(ch: str, custom: dict | None) -> str | None:
+    """查汉字拼音：自定义读音优先，其次内置常用字表。"""
+    if custom and ch in custom:
+        return custom[ch]
+    return _ZH_PINYIN.get(ch)
+
+
+def to_syllables(text: str, custom_pinyin: dict | None = None) -> list:
     """
-    把日文文本切成音节序列（每个假名/拗音组合一个音节）。
-    非假名字符（汉字/英文/标点）原样保留，便于后续人工校正。
+    把文本切成音节序列（每个假名/汉字一个音节）。
+    - 假名：原样（含拗音组合）
+    - 汉字：拼音（如 爱 → "ai"）
+    - 其它字符（标点/英文）保留原样，便于人工校正
     """
     seq = _split_kana_sequence(text)
     syllables = []
@@ -156,15 +253,15 @@ def to_syllables(text: str) -> list:
         elif ch.isspace():
             continue
         else:
-            # 汉字/其它：原样保留并标记
-            syllables.append(f"[{ch}]")
+            py = _zh_pinyin(ch, custom_pinyin)
+            syllables.append(py if py else f"[{ch}]")
     return syllables
 
 
-def to_phonemes(text: str) -> list:
+def to_phonemes(text: str, custom_pinyin: dict | None = None) -> list:
     """
-    把日文文本转成 VOCALOID 音素表（罗马音列表）。
-    每个可合成假名对应一个音素；汉字等不可合成字符以 None 占位。
+    把文本转成 VOCALOID 音素表（罗马音/拼音列表）。
+    每个可合成假名/汉字对应一个音素；无法识别的字符以 None 占位。
     """
     seq = _split_kana_sequence(text)
     phonemes = []
@@ -176,16 +273,18 @@ def to_phonemes(text: str) -> list:
         elif ch.isspace():
             continue
         else:
-            phonemes.append(None)  # 汉字等，需人工读音
+            py = _zh_pinyin(ch, custom_pinyin)
+            phonemes.append(py if py else None)
     return phonemes
 
 
-def to_vocaloid_phonemes(text: str) -> list:
+def to_vocaloid_phonemes(text: str, custom_pinyin: dict | None = None) -> list:
     """
-    把日文文本转成 VOCALOID 合成引擎要求的「空格分隔音素序列」列表。
+    把文本转成 VOCALOID 合成引擎要求的「空格分隔音素序列」列表。
 
     与 to_phonemes（罗马音音节，如 sa）不同，VOCALOID 的 phoneme 字段
     必须是空格分隔的音素序列（如 さ → "s a"、く → "k M"），否则歌词不渲染。
+    中文拼音按声母+韵母拆成音素（如 爱 ai → "a i"）。
     """
     seq = _split_kana_sequence(text)
     phonemes = []
@@ -195,18 +294,19 @@ def to_vocaloid_phonemes(text: str) -> list:
         elif ch.isspace():
             continue
         else:
-            phonemes.append(None)  # 汉字等，需人工读音
+            py = _zh_pinyin(ch, custom_pinyin)
+            phonemes.append(_pinyin_to_phonemes(py) if py else None)
     return phonemes
 
 
-def validate(text: str) -> dict:
+def validate(text: str, custom_pinyin: dict | None = None) -> dict:
     """
     预检歌词可合成性。
     @return: {"ok": bool, "unknown": [字符...], "syllable_count": int, "phonemes": [...]}
     """
-    phonemes = to_phonemes(text)
+    phonemes = to_phonemes(text, custom_pinyin)
     unknown = [p for p in phonemes if p is None]
-    syllables = to_syllables(text)
+    syllables = to_syllables(text, custom_pinyin)
     return {
         "ok": len(unknown) == 0,
         "unknown": unknown,

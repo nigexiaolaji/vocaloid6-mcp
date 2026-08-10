@@ -3,5 +3,5 @@
 mcp>=1.3,<2.0
 pretty_midi>=0.2.10
 numpy>=1.24
-# 方案 B（render_wav UI 自动化）需要时再装：
-# pywinauto>=0.6.8
+# render_wav（方案 B）：pywinauto UI 自动化渲染导出 WAV
+pywinauto>=0.6.8
