@@ -54,12 +54,13 @@ def compose_song(
     voice: str = "",
     emotion: str = "",
     structure: str = "",
+    engine: str = "auto",
 ) -> dict:
     """AI 作曲编排：歌词/想法 → 旋律 MIDI → VOCALOID6 工程文件（.vpr + .vsqx）。
 
     参数：
       lyrics      歌词（日文假名/片假名、或中文，中文自动转拼音）
-      style       default / calm / lively（旋律风格）
+      style       default / calm / lively（旋律风格，仅 template 引擎）
       tempo       BPM（如 120）
       key         调性：C / Dm / Eb / F#m 或数字 0-11
       scale       major / minor / pentatonic / minor_penta
@@ -67,6 +68,7 @@ def compose_song(
       emotion     情感：happy 快乐 / sad 悲伤 / gentle 温柔 / passionate 激昂 /
                   rock 摇滚 / calm 平静（或中文别名），控制力度/开音/颤音/音域
       structure   歌曲结构：pop / simple / ballad（和弦进行 + 主歌/副歌/桥段）；留空用简单模板
+      engine      旋律引擎：auto=有权重用 MIDI-GPT 否则降级模板；midigpt=强制；template=强制
       length_bars 小节数（仅无 structure 时参考）
     """
     return _compose_song(
@@ -80,6 +82,7 @@ def compose_song(
         voice=voice or None,
         emotion=emotion or None,
         structure=structure or None,
+        engine=engine,
     )
 
 

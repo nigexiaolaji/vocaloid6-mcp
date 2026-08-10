@@ -326,6 +326,80 @@ def template_melody_midi(
     return out_path
 
 
+# MIDI-GPT 微调权重默认路径（可用环境变量 MIDIGPT_CHECKPOINT 覆盖）
+_DEFAULT_MIDIGPT_CKPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "checkpoints", "midigpt", "run_001", "model_final.safetensors",
+)
+
+
+def _midigpt_checkpoint() -> str | None:
+    """返回可用的 MIDI-GPT 微调权重路径（不存在返回 None）。"""
+    p = os.environ.get("MIDIGPT_CHECKPOINT") or _DEFAULT_MIDIGPT_CKPT
+    return p if os.path.isfile(p) else None
+
+
+def midigpt_melody_midi(
+    lyrics: str | None = None,
+    out_path: str | None = None,
+    seed: int = 42,
+    checkpoint: str | None = None,
+    bars: int = 4,
+    tracks: int = 1,
+) -> str:
+    """
+    用微调的 MIDI-GPT 生成旋律 MIDI（scratch 模式，AI 原创旋律）。
+
+    @param bars: 生成小节数（按歌词音节数自动估算，最少 4 小节保证质量）
+    @param tracks: 轨道数（默认 1 轨主旋律，后续可扩展多轨）
+    @return: 生成的 .mid 路径
+    """
+    import json  # noqa: F401
+
+    from midigpt import Bar, Score, Track
+    from midigpt.inference import (
+        GenerationRequest,
+        InferenceConfig,
+        InferenceEngine,
+        TrackPrompt,
+    )
+
+    ckpt = checkpoint or _midigpt_checkpoint()
+    if not ckpt:
+        raise FileNotFoundError(
+            "未找到 MIDI-GPT 微调权重（checkpoints/midigpt/run_001/model_final.safetensors），"
+            "请先回传权重或用 MIDIGPT_CHECKPOINT 指定路径"
+        )
+
+    syll = _syllable_count(lyrics, fallback=bars * 4)
+    bars = max(4, (syll + 3) // 4)  # 每小节约 4 音节，最少 4 小节
+
+    engine = InferenceEngine.from_checkpoint(ckpt)
+    score = Score(
+        tracks=[
+            Track(bars=[Bar() for _ in range(bars)], instrument=0, track_type="melodic")
+            for _ in range(tracks)
+        ]
+    )
+    request = GenerationRequest(
+        tracks=[
+            TrackPrompt(id=i, bars=list(range(bars)), autoregressive=True)
+            for i in range(tracks)
+        ],
+        config=InferenceConfig(
+            temperature=1.0,
+            top_p=0.95,
+            model_dim=bars,
+            seed=seed,
+        ),
+    )
+    result = engine.session(score, request).run()
+    if not out_path:
+        out_path = os.path.join(tempfile.gettempdir(), "midigpt_melody.mid")
+    result.to_midi(str(out_path))
+    return out_path
+
+
 def compose_song(
     lyrics: str | None = None,
     style: str = "default",
@@ -337,17 +411,19 @@ def compose_song(
     voice: str | None = None,
     emotion: str | None = None,
     structure: str | None = None,
+    engine: str = "auto",
 ) -> dict:
     """
-    MCP 工具 compose_song 的底层实现（降级模板路径）。
+    MCP 工具 compose_song 的底层实现。
 
-    @param style: default / calm / lively（旋律风格）
+    @param style: default / calm / lively（旋律风格，仅 template 引擎使用）
     @param key: 调性（数字 0-11 或调名 "C"/"Dm"/"Eb"）
     @param scale: major / minor / pentatonic / minor_penta
     @param voice: 歌姬名或 compID（如 "MIKU_V4X_Original_EVEC"）
     @param emotion: 情感（happy/sad/gentle/passionate/rock/calm 或中文别名）
-    @param structure: pop / simple / ballad / None（和弦进行 + 主歌/副歌/桥段结构）
-    @return: {status, midi_path, vsqx_path, note_count, tempo, elapsed_sec}
+    @param structure: pop / simple / ballad / None（和弦进行 + 主歌/副歌/桥段结构，仅 template 引擎）
+    @param engine: auto=有权重用 midigpt 否则 template；midigpt=强制；template=强制
+    @return: {status, midi_path, vsqx_path, note_count, tempo, engine, elapsed_sec}
     """
     import time
 
@@ -358,16 +434,45 @@ def compose_song(
     os.makedirs(out_dir, exist_ok=True)
 
     song_name = f"composed_{int(t0)}"
-    midi_path = template_melody_midi(
-        lyrics=lyrics,
-        tempo=tempo,
-        key=key,
-        scale=scale,
-        style=style,
-        out_path=os.path.join(out_dir, song_name + ".mid"),
-        emotion=emotion,
-        structure=structure,
-    )
+    out_mid = os.path.join(out_dir, song_name + ".mid")
+
+    # 引擎选择：auto → 权重存在用 midigpt；显式 midigpt → 强制；template → 强制
+    ckpt = _midigpt_checkpoint()
+    use_midigpt = (engine == "midigpt") or (engine == "auto" and ckpt is not None)
+    engine_used = "template"
+
+    if use_midigpt:
+        try:
+            midi_path = midigpt_melody_midi(
+                lyrics=lyrics,
+                out_path=out_mid,
+                seed=int(t0) % (2**31),
+            )
+            engine_used = "midigpt"
+        except Exception as e:
+            # midigpt 失败降级 template，保证链路不中断
+            print(f"[compose_song] midigpt 引擎失败，降级 template: {e}", flush=True)
+            midi_path = template_melody_midi(
+                lyrics=lyrics,
+                tempo=tempo,
+                key=key,
+                scale=scale,
+                style=style,
+                out_path=out_mid,
+                emotion=emotion,
+                structure=structure,
+            )
+    else:
+        midi_path = template_melody_midi(
+            lyrics=lyrics,
+            tempo=tempo,
+            key=key,
+            scale=scale,
+            style=style,
+            out_path=out_mid,
+            emotion=emotion,
+            structure=structure,
+        )
 
     result = midi_to_vocaloid(
         midi_path,
@@ -382,7 +487,8 @@ def compose_song(
         {
             "status": "ok",
             "midi_path": midi_path,
-            "engine": "template",  # 后续切 MIDI-GPT 时改为 "midigpt"
+            "engine": engine_used,
+            "engine_requested": engine,
             "key": str(key) if key is not None else "C",
             "scale": scale,
             "style": style,
