@@ -354,6 +354,43 @@ def _pick_voice(voice_comp_id: str | None, voice_name: str | None) -> tuple:
     return cid, name
 
 
+def _clean_notes(notes, min_note_ms: int = 60, max_jump_semitones: int | None = None) -> list:
+    """
+    音符清理（解决 VOCALOID 演唱时的两个问题）：
+      1. 过短音符拉长到 min_note_ms——避免辅音（[ts]/[k]/[s]）未唱完音符就结束的吞字问题
+      2. 相邻音符无缝衔接——避免音符间空白导致音高曲线锯齿/电子故障感
+      3. 可选音高限幅 max_jump_semitones——限制相邻音符音高突变（默认不启用，
+         保留原始旋律；锯齿主要靠无缝衔接缓解）
+
+    直接修改传入的 pretty_midi.Note 对象（start/end/pitch），返回处理后列表。
+    """
+    if not notes:
+        return []
+    min_sec = max(0.02, min_note_ms / 1000.0)
+    notes = sorted(notes, key=lambda n: n.start)
+    cleaned = []
+    for n in notes:
+        dur = n.end - n.start
+        # 1) 过短音符拉长
+        if dur < min_sec:
+            n.end = n.start + min_sec
+            dur = min_sec
+        # 2) 音高限幅（可选）
+        if max_jump_semitones and cleaned:
+            diff = n.pitch - cleaned[-1].pitch
+            if abs(diff) > max_jump_semitones:
+                n.pitch = cleaned[-1].pitch + (max_jump_semitones if diff > 0 else -max_jump_semitones)
+        # 3) 无缝衔接：start 不早于前一音符的 end
+        if cleaned:
+            prev_end = cleaned[-1].end
+            if n.start < prev_end:
+                n.start = prev_end
+                if n.end <= n.start:
+                    n.end = n.start + max(min_sec, dur)
+        cleaned.append(n)
+    return cleaned
+
+
 def midi_to_vpr(
     midi_path: str,
     lyrics: str | None = None,
@@ -363,6 +400,7 @@ def midi_to_vpr(
     voice_comp_id: str | None = None,
     voice_name: str | None = None,
     emotion: str | None = None,
+    multi_track: bool = False,
 ) -> dict:
     """
     MIDI → VOCALOID6 原生工程文件 .vpr（zip + Project/sequence.json）。
@@ -372,7 +410,9 @@ def midi_to_vpr(
 
     @param emotion: 情感（happy/sad/gentle/passionate/rock/calm 或中文别名），
                     控制音符力度/开音/颤音与 Part 级控制器曲线
-    @return: {vpr_path, note_count, tempo, duration_sec, note_data, voice_comp_id}
+    @param multi_track: True=完整多轨拆分（歌姬轨带歌词 + 伴奏轨纯音符），
+                        False=仅取主旋律轨（默认）
+    @return: {vpr_path, note_count, tempo, duration_sec, note_data, voice_comp_id, tracks}
     """
     import json
     import zipfile
@@ -390,13 +430,173 @@ def midi_to_vpr(
         out_path = os.path.join(os.path.dirname(os.path.abspath(midi_path)), song + ".vpr")
 
     comp_id, name = _pick_voice(voice_comp_id, voice_name)
-    note_data = _extract_note_data(pm, bpm, lyrics)
-    if not note_data:
-        raise ValueError("旋律轨没有可导出的音符")
-
     total_ticks = _sec_to_ticks(pm.get_end_time(), bpm) or 7680
     tempo_val = int(bpm * 100)
     ep = emotion_params(emotion)  # {"_key","_label",velocity,opening,vibrato_type,vibrato_dur,controllers}
+
+    def _note_dict(nd):
+        """按情感生成音符字典（velocity/exp/vibrato 来自情感映射）。"""
+        v = nd[3]  # MIDI velocity 作基线
+        velocity = ep["velocity"] if emotion else max(1, min(127, v))
+        opening = ep["opening"]
+        vt = ep["vibrato_type"]
+        vd = ep["vibrato_dur"]
+        return {
+            "lyric": nd[4],
+            # 真实 V6 工程：phoneme 为音素字符串（如 "y o"）；null 会导致歌词不显示
+            "phoneme": nd[5],
+            "isProtected": False,
+            "pos": nd[0],
+            "duration": nd[1],
+            "number": nd[2],
+            "velocity": velocity,
+            "exp": {"opening": opening},
+            # singingSkill 必须为有效对象（参考真实工程），null 会导致音符不渲染
+            "singingSkill": {
+                "duration": 0,
+                "weight": {"pre": 64, "post": 64},
+            },
+            "vibrato": {"type": vt, "duration": vd},
+        }
+
+    def _vocal_note_dict(nd):
+        """歌姬轨音符：带歌词与音素。"""
+        return _note_dict(nd)
+
+    def _inst_note_dict(nd):
+        """伴奏轨音符：纯乐器，不唱歌词（lyric/phoneme 留空）。"""
+        v = max(1, min(127, nd[3]))
+        return {
+            "lyric": "",
+            "phoneme": "",
+            "isProtected": False,
+            "pos": nd[0],
+            "duration": nd[1],
+            "number": nd[2],
+            "velocity": v,
+            "exp": {"opening": 127},
+            "singingSkill": {"duration": 0, "weight": {"pre": 64, "post": 64}},
+            "vibrato": {"type": 0, "duration": 0},
+        }
+
+    # ── 多轨模式：歌姬轨(voxlead/voxbg) + 伴奏轨(bass/guitar/other) 分开 ──
+    if multi_track:
+        from .lyrics import to_syllables, to_vocaloid_phonemes
+
+        # 预生成歌词音节对（循环铺满）
+        pairs = []
+        if lyrics:
+            syllables = to_syllables(lyrics)
+            phonemes = to_vocaloid_phonemes(lyrics)
+            pairs = [
+                (syl, ph) for syl, ph in zip(syllables, phonemes)
+                if ph and not syl.startswith("[")
+            ]
+
+        tracks_json = []
+        track_names = []
+        vocal_names = ("voxlead", "voxbg", "vocals", "vocal")
+        for inst in pm.instruments:
+            if inst.is_drum or not inst.notes:
+                continue
+            tname = inst.name or "Track"
+            is_vocal = any(vn in tname.lower() for vn in vocal_names)
+
+            # 音符清理：过短音符拉长（辅音丢失）+ 无缝衔接（音高曲线锯齿）
+            inst_notes = _clean_notes(inst.notes, min_note_ms=60, max_jump_semitones=None)
+            notes_sorted = sorted(inst_notes, key=lambda n: n.start)
+            if is_vocal:
+                # 歌姬轨：歌词循环铺满
+                nds = []
+                for i, n in enumerate(notes_sorted):
+                    lyr, ph = pairs[i % len(pairs)] if pairs else ("a", "a")
+                    nds.append((
+                        _sec_to_ticks(n.start, bpm),
+                        max(60, _sec_to_ticks(n.end - n.start, bpm)),
+                        int(n.pitch),
+                        max(1, min(127, int(n.velocity))),
+                        lyr, ph,
+                    ))
+                note_dicts = [_vocal_note_dict(nd) for nd in nds]
+                part_voice = {"compID": comp_id, "langID": 0}
+            else:
+                # 伴奏轨：纯音符，无歌词
+                nds = [
+                    (
+                        _sec_to_ticks(n.start, bpm),
+                        max(60, _sec_to_ticks(n.end - n.start, bpm)),
+                        int(n.pitch),
+                        max(1, min(127, int(n.velocity))),
+                        "", "",
+                    )
+                    for n in notes_sorted
+                ]
+                note_dicts = [_inst_note_dict(nd) for nd in nds]
+                part_voice = {"compID": "", "langID": 0}
+
+            tracks_json.append({
+                "type": 0,
+                "name": tname,
+                "color": 0,
+                "busNo": 0,
+                "isFolded": False,
+                "height": 0.0,
+                "volume": {"isFolded": False, "height": 0.0, "events": [{"pos": 0, "value": 0}]},
+                "panpot": {"isFolded": False, "height": 0.0, "events": [{"pos": 0, "value": 0}]},
+                "isMuted": False,
+                "isSoloMode": False,
+                "parts": [
+                    {
+                        "name": "Part1",
+                        "pos": 0,
+                        "duration": total_ticks,
+                        "styleName": "VOCALOID2 Compatible Style",
+                        "voice": part_voice,
+                        "midiEffects": [],
+                        "notes": note_dicts,
+                        "controllers": build_controllers(emotion, total_ticks) if is_vocal else [],
+                    }
+                ],
+            })
+            track_names.append(tname)
+
+        seq = {
+            "version": {"major": 5, "minor": 4, "revision": 0},
+            "vender": "Yamaha Corporation",
+            "title": song,
+            "masterTrack": {
+                "samplingRate": 44100,
+                "loop": {"isEnabled": False, "begin": 0, "end": total_ticks},
+                "tempo": {
+                    "isFolded": False,
+                    "height": 0.0,
+                    "global": {"isEnabled": False, "value": tempo_val},
+                    "events": [{"pos": 0, "value": tempo_val}],
+                },
+                "timeSig": {"isFolded": False, "events": [{"bar": 0, "numer": 4, "denom": 4}]},
+                "volume": {"isFolded": False, "height": 0.0, "events": [{"pos": 0, "value": 0}]},
+            },
+            "voices": [{"compID": comp_id, "name": name}],
+            "tracks": tracks_json,
+        }
+
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("Project/sequence.json", json.dumps(seq, ensure_ascii=False, indent=2))
+
+        return {
+            "vpr_path": out_path,
+            "note_count": sum(len(t["parts"][0]["notes"]) for t in tracks_json),
+            "tempo": round(bpm, 2),
+            "duration_sec": round(pm.get_end_time(), 2),
+            "tracks": track_names,
+            "emotion": ep["_key"],
+            "emotion_label": ep["_label"],
+        }
+
+    # ── 单轨模式（默认）：仅主旋律轨 ──
+    note_data = _extract_note_data(pm, bpm, lyrics)
+    if not note_data:
+        raise ValueError("旋律轨没有可导出的音符")
 
     def _note_dict(nd):
         """按情感生成音符字典（velocity/exp/vibrato 来自情感映射）。"""
@@ -491,12 +691,14 @@ def midi_to_vocaloid(
     out_dir: str | None = None,
     voice: str | None = None,
     emotion: str | None = None,
+    multi_track: bool = False,
 ) -> dict:
     """
     MCP 工具 midi_to_vocaloid 的底层实现：MIDI → V6 原生 .vpr（主）+ .vsqx（备）。
 
     @param voice: 歌姬名（如 "MIKU_V4X_Original_EVEC" / "HARUKA"）或 compID；缺省自动发现本机声库
     @param emotion: 情感（happy/sad/gentle/passionate/rock/calm 或中文别名）
+    @param multi_track: True=完整多轨拆分（歌姬轨带歌词 + 伴奏轨纯音符），False=仅主旋律轨
     @return: 结构化结果（含 vpr_path/vsqx_path 与统计）
     """
     t0 = time.time()
@@ -519,7 +721,7 @@ def midi_to_vocaloid(
 
     result = midi_to_vpr(midi_path, lyrics, song_name, tempo, vpr_path,
                          voice_comp_id=voice_comp_id, voice_name=voice_name,
-                         emotion=emotion)
+                         emotion=emotion, multi_track=multi_track)
     # 兼容兜底：同时产出 vsqx（部分场景仍可能需要）
     try:
         vsqx_result = midi_to_vsqx(midi_path, lyrics, song_name, tempo, vsqx_path)
